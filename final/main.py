@@ -89,19 +89,42 @@ class Main(Node):
         mask = ranges > 0
         self.show_scan(angles, ranges, mask)
 
-        self.wall_distance, self.angle_diff = self.process_lidar(angles, ranges)
+        # set self.wall_distance, self.angle_diff
+        self.process_lidar(angles, ranges)
         return
 
     # conduct hough transform to find all lines nearby
     # then return wall distance and angle misalignment
     def process_lidar(self, angles, ranges):
+        # Task 1 ---- find wall distance
         # first focus on straight ahead +/-  10 degs
         mask = np.bitwise_and(angles < radians(10), angles > radians(-10))
         xx = ranges[mask]*np.cos(angles[mask])
         yy = ranges[mask]*np.sin(angles[mask])
         # TODO check dimension
         points = np.vstack([xx,yy]).T
-        lines = self.hough(points)
+        # d = x cos + y sin, gives theta, d
+        line = self.hough(points,n=1)[0]
+        # is the wall mostly perpendicular?
+        # theta=0 -> directly in front, theta>0, leaning to second quadrant
+        # how far is the wall
+        self.wall_distance = line[1]
+
+        # Task 2 ---- find misalignment
+        mask = ranges < 2
+        xx = ranges[mask]*np.cos(angles[mask])
+        yy = ranges[mask]*np.sin(angles[mask])
+        points = np.vstack([xx,yy]).T
+        # d = x cos + y sin, gives theta, d
+        lines = self.hough(points,n=1)
+        thetas = np.array([line[0] for line in lines])
+        # wrap to -np.pi, np.pi
+        thetas = (thetas + np.pi/4) % (np.pi/2) - np.pi/4
+        angle_disagreement = np.max(thetas) - np.min(thetas)
+        self.angle_diff = np.mean(thetas)
+        self.get_logger().info(f'wall: {degrees(line[0])}deg, d={line[1]}, misalign = {degrees(self.angle_diff)}deg, (err {angle_disagreement})')
+        return
+        
 
     # conduct hough transform, give equations for the top n results
     # d = cos(theta) * x + sin(theta) * y
@@ -296,4 +319,4 @@ def debug(args=None):
 
 if __name__ == '__main__':
     #main()
-    debug()
+    #debug()
