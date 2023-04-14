@@ -18,12 +18,13 @@ from identify import Signs
 
 class Main(Node):
     def __init__(self):
-        super().__init__('set_goal')
+        super().__init__('main')
         self.wall_dist_limit = 0.3
 
         self.br = CvBridge()
         self.vision = Signs()
         self.vision.prepareTemplateContours()
+        self.start_labeling = Event()
 
         # distance to wall in front
         # if no wall in sight this is set to 1.0
@@ -58,12 +59,12 @@ class Main(Node):
         ax.cla()
         scan_x = np.cos(angles) * ranges
         scan_y = np.sin(angles) * ranges
-        ax.scatter(scan_x,scan_y,color='b')
+        ax.scatter(scan_x,scan_y,color='k')
 
         # ROI
         scan_x = np.cos(angles[mask]) * ranges[mask]
         scan_y = np.sin(angles[mask]) * ranges[mask]
-        ax.scatter(scan_x,scan_y,color='k')
+        ax.scatter(scan_x,scan_y,color='b')
 
         # robot location
         circle = plt.Circle((0,0),0.1, color='r')
@@ -71,9 +72,10 @@ class Main(Node):
         ax.set_xlim([-1,1])
         ax.set_ylim([-1,1])
         ax.set_aspect('equal','box')
+
         # robot FOV (ROI)
-        ax.plot([0, cos(radians(45))],[0, sin(radians(45))] )
-        ax.plot([0, cos(radians(-45))],[0, sin(-radians(45))] )
+        ax.plot([0, cos(radians(10))],[0, sin(radians(10))] )
+        ax.plot([0, cos(radians(-10))],[0, sin(-radians(10))] )
 
         return
 
@@ -86,11 +88,10 @@ class Main(Node):
         angles = np.linspace(msg.angle_min, msg.angle_max, len(msg.ranges))
         angles = (angles + np.pi) % (2*np.pi) - np.pi
         ranges = np.array(msg.ranges)
-        mask = ranges > 0
-        self.show_scan(angles, ranges, mask)
 
         # set self.wall_distance, self.angle_diff
         self.process_lidar(angles, ranges)
+        plt.pause(0.05)
         return
 
     # conduct hough transform to find all lines nearby
@@ -99,8 +100,12 @@ class Main(Node):
         # Task 1 ---- find wall distance
         # first focus on straight ahead +/-  10 degs
         mask = np.bitwise_and(angles < radians(10), angles > radians(-10))
+        mask = np.bitwise_and(mask, np.invert(np.isnan(ranges)))
         xx = ranges[mask]*np.cos(angles[mask])
         yy = ranges[mask]*np.sin(angles[mask])
+
+        self.show_scan(angles, ranges, mask)
+        
         # TODO check dimension
         points = np.vstack([xx,yy]).T
         # d = x cos + y sin, gives theta, d
@@ -109,6 +114,14 @@ class Main(Node):
         # theta=0 -> directly in front, theta>0, leaning to second quadrant
         # how far is the wall
         self.wall_distance = line[1]
+        #print(f'theta = {degrees(line[0])}, d = {line[1]}')
+
+        # plot the said line
+        theta = (line[0] + np.pi/2) % np.pi - np.pi/2
+        d = line[1]
+        xx = np.linspace(-1,1)
+        yy = (d-np.cos(theta)*xx)/np.sin(theta)
+        self.ax.plot(xx,yy)
 
         # Task 2 ---- find misalignment
         mask = ranges < 2
@@ -122,7 +135,8 @@ class Main(Node):
         thetas = (thetas + np.pi/4) % (np.pi/2) - np.pi/4
         angle_disagreement = np.max(thetas) - np.min(thetas)
         self.angle_diff = np.mean(thetas)
-        self.get_logger().info(f'wall: {degrees(line[0])}deg, d={line[1]}, misalign = {degrees(self.angle_diff)}deg, (err {angle_disagreement})')
+        wrapped_wall_angle = (line[0] + np.pi/2) % np.pi - np.pi/2
+        self.get_logger().info(f'wall: {degrees(wrapped_wall_angle)}deg, d={line[1]}, misalign = {degrees(self.angle_diff)}deg, (err {angle_disagreement})')
         return
         
 
@@ -165,6 +179,8 @@ class Main(Node):
         img = self.br.compressed_imgmsg_to_cv2(msg)
         label = self.vision.identify(img)
         self.label = label
+        if (self.start_labeling.is_set()):
+            self.label_vec.append(label)
         self.get_logger().info(f'[camera_callback] found {self.label2text[label]}')
         return
 
@@ -172,9 +188,21 @@ class Main(Node):
     # only include results from past 0.5 seconds
     # only return if self.label_vec has a consistent reading
     # return None if can't make a decision
-    # TODO
     def getLabel(self):
-        return self.label
+        self.get_logger().info(f'identifying labels, 2 sec...')
+
+        self.label_vec = []
+        self.start_labeling.set()
+        sleep(2)
+        self.start_labeling.clear()
+        values, counts = np.unique(self.label_vec, return_counts=True)
+        idx = np.argmax(counts)
+        label = values[idx]
+        confidence = counts[idx]/np.sum(counts)
+
+        self.get_logger().info(f'label = {self.label2text[label]}, confidence = {confidence}')
+
+        return label
 
     # take appropriate action given label
     def takeAction(self,label):
@@ -218,11 +246,16 @@ class Main(Node):
     # find adjust turning to align with walls
     # repeat
     def run(self):
-        self.goForward()
-        label = self.getLabel()
+        try:
+            self.goForward()
+            label = self.getLabel()
 
-        while (label != 4):
-            self.takeAction(label)
+            while (label != 4):
+                self.takeAction(label)
+        except KeyboardInterrupt:
+            msg = Twist()
+            self.pub_cmd.publish(msg)
+            sleep(0.1)
         return
 
     # fine adjust orientation
@@ -262,14 +295,14 @@ class Main(Node):
 
         msg = Twist()
         msg.linear.x = v_linear
-        self.publisher.publish(msg)
+        self.pub_cmd.publish(msg)
 
         while (self.wall_distance > self.wall_dist_limit):
             self.get_logger().info(f'wall dist {self.wall_distance}')
             sleep(0.2)
 
         msg = Twist()
-        self.publisher.publish(msg)
+        self.pub_cmd.publish(msg)
         sleep(0.1)
         self.get_logger().info(f'stopped at {self.wall_distance}')
         return
@@ -280,12 +313,24 @@ def main(args=None):
     rclpy.init(args=args)
     node = Main()
 
+    thread = Thread(target=rclpy.spin, args=(node,),daemon=True)
+    thread.start()
+    node.run()
+    #rclpy.spin(node)
+
+    thread.join()
+    node.destroy_node()
+    rclpy.shutdown()
+
+def debug(args=None):
+    rclpy.init(args=args)
+    node = Main()
     rclpy.spin(node)
 
     node.destroy_node()
     rclpy.shutdown()
 
-def debug(args=None):
+def debug2(args=None):
     rclpy.init(args=args)
     main = Main()
 
@@ -319,4 +364,4 @@ def debug(args=None):
 
 if __name__ == '__main__':
     #main()
-    #debug()
+    debug()
