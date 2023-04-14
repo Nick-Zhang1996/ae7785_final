@@ -5,8 +5,12 @@ import numpy as np
 from time import sleep,time
 from threading import Event,Thread
 import matplotlib.pyplot as plt
-from sensor_msgs.msg import LaserScan
+from cv_bridge import CvBridge
+from sensor_msgs.msg import LaserScan, CompressedImage
+from geometry_msgs.msg import Point,Twist,Pose,PoseWithCovariance
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy, QoSHistoryPolicy
+
+from identify import Signs
 
 # when turning, make sure final position is aligned with nearby walls
 # when moving, make sure to stop when facing a wall
@@ -17,6 +21,9 @@ class Main(Node):
         super().__init__('set_goal')
         self.wall_dist_limit = 0.3
 
+        self.br = CvBridge()
+        self.vision = Signs()
+        self.vision.prepareTemplateContours()
 
         # distance to wall in front
         # if no wall in sight this is set to 1.0
@@ -27,11 +34,8 @@ class Main(Node):
         self.label_ts_vec = []
         self.label2text = ['empty','left','right','do not enter','stop','goal']
 
-
-
-
-        self.publisher = self.create_publisher(PoseStamped, '/goal_pose', 1)
-        self.listener = self.create_subscription(PointStamped, '/clicked_point',self.callback, 1)
+        # temporary
+        self.label = 0
 
         self.pub_cmd = self.create_publisher(Twist, '/cmd_vel', 5)
         #Set up QoS Profiles for passing images over WiFi
@@ -44,9 +48,34 @@ class Main(Node):
 
 
         self.sub_scan = self.create_subscription(LaserScan,'scan',self.lidar_callback,lidar_qos_profile)
+        self.sub_camera = self.create_subscription(CompressedImage,'/camera/image/compressed',self.camera_callback,lidar_qos_profile)
         # for visualization
         self.fig = plt.gcf()
         self.ax = self.fig.gca()
+
+    def show_scan(self, angles, ranges, mask):
+        ax = self.ax
+        ax.cla()
+        scan_x = np.cos(angles) * ranges
+        scan_y = np.sin(angles) * ranges
+        ax.scatter(scan_x,scan_y,color='b')
+
+        # ROI
+        scan_x = np.cos(angles[mask]) * ranges[mask]
+        scan_y = np.sin(angles[mask]) * ranges[mask]
+        ax.scatter(scan_x,scan_y,color='k')
+
+        # robot location
+        circle = plt.Circle((0,0),0.1, color='r')
+        ax.add_patch(circle)
+        ax.set_xlim([-1,1])
+        ax.set_ylim([-1,1])
+        ax.set_aspect('equal','box')
+        # robot FOV (ROI)
+        ax.plot([0, cos(radians(45))],[0, sin(radians(45))] )
+        ax.plot([0, cos(radians(-45))],[0, sin(-radians(45))] )
+
+        return
 
     # lidar callback
     # sets: self.wall_distance -> distance to front wall
@@ -57,14 +86,63 @@ class Main(Node):
         angles = np.linspace(msg.angle_min, msg.angle_max, len(msg.ranges))
         angles = (angles + np.pi) % (2*np.pi) - np.pi
         ranges = np.array(msg.ranges)
+        mask = ranges > 0
+        self.show_scan(angles, ranges, mask)
+
+        self.wall_distance, self.angle_diff = self.process_lidar(angles, ranges)
         return
 
+    # conduct hough transform to find all lines nearby
+    # then return wall distance and angle misalignment
+    def process_lidar(self, angles, ranges):
+        # first focus on straight ahead +/-  10 degs
+        mask = np.bitwise_and(angles < radians(10), angles > radians(-10))
+        xx = ranges[mask]*np.cos(angles[mask])
+        yy = ranges[mask]*np.sin(angles[mask])
+        # TODO check dimension
+        points = np.vstack([xx,yy]).T
+        lines = self.hough(points)
+
+    # conduct hough transform, give equations for the top n results
+    # d = cos(theta) * x + sin(theta) * y
+    # line parameter: (theta, d)
+    def hough(self, points, n=3):
+        # d: [0-0.01m, 0.01-0.02m, ... - 1m]
+        # theta [0-1deg, 1-2deg, ... 180deg]
+        # panel[theta_idx, d_idx]
+        dd = 0.01
+        dtheta = radians(1)
+        d_count = int(1.0/dd)+1
+        theta_count = int(np.pi/dtheta)+1
+        panel = np.zeros((theta_count,d_count),dtype=int)
+        # TODO verify spacing and slots
+        thetas = np.linspace(0,np.pi, theta_count)
+        ds = np.linspace(0,1, d_count)
+        for point in points:
+            d_vec = point[0] * np.cos(thetas) + point[1] * np.sin(thetas)
+            for i in range(theta_count):
+                try:
+                    panel[i,int(d_vec[i]/dd)] += 1
+                except IndexError:
+                    pass
+        #indices = np.unravel_index(np.argmax(panel,axis=None), panel.shape)
+        #return ( thetas[indices[0]], ds[indices[1] ])
+
+        #2*n incices of 3 best candidates
+        multiple_indices = np.unravel_index(np.argpartition(panel.flatten(),-n)[-n:], panel.shape)
+        
+        theta_d = [( thetas[multiple_indices[0][i]], ds[multiple_indices[1][i] ]) for i in range(len(multiple_indices[0]))]
+        return theta_d
+        
     # camera callback
     # only runs when self.camera_enable = True
     # sets: self.label_vec, which is a FIFO queue storing identified labels
     # sets: self.label_ts_vec, which is time stamp for self.label_vec
-    # TODO
     def camera_callback(self,msg):
+        img = self.br.compressed_imgmsg_to_cv2(msg)
+        label = self.vision.identify(img)
+        self.label = label
+        self.get_logger().info(f'[camera_callback] found {self.label2text[label]}')
         return
 
     # return the label the camera is looking at
@@ -73,7 +151,7 @@ class Main(Node):
     # return None if can't make a decision
     # TODO
     def getLabel(self):
-        return 0
+        return self.label
 
     # take appropriate action given label
     def takeAction(self,label):
@@ -184,6 +262,38 @@ def main(args=None):
     node.destroy_node()
     rclpy.shutdown()
 
+def debug(args=None):
+    rclpy.init(args=args)
+    main = Main()
+
+    theta = radians(15)
+    d = 0.4
+    print(f'theta = {theta}, d = {d}')
+    xx = np.linspace(3,5)
+    yy = (d-np.cos(theta)*xx)/np.sin(theta)
+    points1 = np.vstack([xx,yy]).T
+
+    theta = radians(40)
+    d = 0.8
+    print(f'theta = {theta}, d = {d}')
+    xx = np.linspace(-1,1)
+    yy = (d-np.cos(theta)*xx)/np.sin(theta)
+    points2 = np.vstack([xx,yy]).T
+
+    theta = radians(2)
+    d = 0.1
+    print(f'theta = {theta}, d = {d}')
+    xx = np.linspace(-1,1)
+    yy = (d-np.cos(theta)*xx)/np.sin(theta)
+    points3 = np.vstack([xx,yy]).T
+
+    points = np.vstack([points1, points2, points3])
+
+    val = main.hough(points,n=2)
+    print(val)
+
+
 
 if __name__ == '__main__':
-    main()
+    #main()
+    debug()
