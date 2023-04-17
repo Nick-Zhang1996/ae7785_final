@@ -11,6 +11,7 @@ from geometry_msgs.msg import Point,Twist,Pose,PoseWithCovariance
 from rclpy.qos import QoSProfile, QoSDurabilityPolicy, QoSReliabilityPolicy, QoSHistoryPolicy
 
 from identify import Signs
+import cv2
 
 # when turning, make sure final position is aligned with nearby walls
 # when moving, make sure to stop when facing a wall
@@ -24,7 +25,7 @@ class Main(Node):
 
         self.br = CvBridge()
         self.vision = Signs()
-        self.vision.prepareTemplateContours()
+        self.vision.loadModel()
         self.start_labeling = Event()
 
         # distance to wall in front
@@ -125,8 +126,8 @@ class Main(Node):
         # plot the said line
         theta = (line[0] + np.pi/2) % np.pi - np.pi/2
         d = line[1]
-        xx = np.linspace(-1,1)
-        yy = (d-np.cos(theta)*xx)/np.sin(theta)
+        #xx = np.linspace(-1,1)
+        #yy = (d-np.cos(theta)*xx)/np.sin(theta)
         #self.ax.plot(xx,yy)
 
         # Task 2 ---- find misalignment
@@ -192,11 +193,20 @@ class Main(Node):
     # sets: self.label_ts_vec, which is time stamp for self.label_vec
     def camera_callback(self,msg):
         img = self.br.compressed_imgmsg_to_cv2(msg)
-        label = self.vision.identify(img)
+        if (img is None):
+            self.get_logger().info(f'[camera_callback] got None')
+        label = self.vision.predict(img)
         self.label = label
         if (self.start_labeling.is_set()):
             self.label_vec.append(label)
-            self.get_logger().info(f'[camera_callback] found {self.label2text[label]}')
+
+        self.get_logger().info(f'[camera_callback] found label: {self.label2text[label]}')
+
+        #cv2.imshow('debug',img)
+        #key = cv2.waitKey(10)
+        #if (key == 27):
+        #    exit(0)
+
         return
 
     # return the label the camera is looking at
@@ -384,5 +394,5 @@ def debug2(args=None):
 
 
 if __name__ == '__main__':
-    #main()
-    debug()
+    main()
+    #debug()

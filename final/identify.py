@@ -283,11 +283,11 @@ class Signs:
         return
 
     def predict(self,img):
-        processed = self.process(img).flatten()/255-0.5
+        processed = self.process(img)
         if (processed is None):
             return 0 # empmty
         else:
-            return self.clf.predict([processed])[0]
+            return self.clf.predict([processed.flatten()/255-0.5])[0]
         
 
 if __name__=='__main__':
