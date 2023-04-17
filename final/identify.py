@@ -5,36 +5,50 @@ import csv
 import time
 import numpy as np
 import matplotlib.pyplot as plt
+from sklearn import svm
+import pickle
 
 class Signs:
 
     def __init__(self):
-        # XXX TA: change this directory to test a different dataset
-        self.test_dir = './2022Fimgs/'
+        self.image_dir = './2022Fimgs/'
+        self.suffix = '.png'
+        self.label2text = ['empty','left','right','do not enter','stop','goal']
+        self.clf = None
 
-        self.image_dir = imageDirectory = './2022Fimgs/'
+    def saveModel(self):
+        with open('svm.p','wb') as f:
+            pickle.dump(self.clf,f)
+    def loadModel(self):
+        with open('svm.p','rb') as f:
+            self.clf = pickle.load(f)
+
+    def loadImgs(self):
+        imageDirectory = self.image_dir
         with open(imageDirectory + 'train.txt', 'r') as f:
             reader = csv.reader(f)
             lines = list(reader)
-
-        self.label2text = ['empty','left','right','do not enter','stop','goal']
-        # this line reads in all images listed in the file in GRAYSCALE, and resizes them to 33x25 pixels
-        #train = np.array([np.array(cv2.resize(cv2.imread(imageDirectory +lines[i][0]+".png",0),(33,25))) for i in range(len(lines))])
-        train = np.array([np.array(cv2.imread(imageDirectory +lines[i][0]+".png")) for i in range(len(lines))])
-
-        # here we reshape each image into a long vector and ensure the data type is a float (which is what KNN wants)
-        #train_data = train.flatten().reshape(len(lines), 33*25)
-        #train_data = train_data.astype(np.float32)
-
+        train = np.array([np.array(cv2.imread(imageDirectory +lines[i][0]+self.suffix)) for i in range(len(lines))])
         # read in training labels
         train_labels = np.array([np.int32(lines[i][1]) for i in range(len(lines))])
-
-        self.train_data = train
+        self.train_imgs = train
         self.train_labels = train_labels
+
+        imageDirectory = './2022Simgs/'
+        self.suffix = '.jpg'
+        with open(imageDirectory + 'test.txt', 'r') as f:
+            reader = csv.reader(f)
+            lines = list(reader)
+        test = np.array([np.array(cv2.imread(imageDirectory +lines[i][0]+self.suffix)) for i in range(len(lines))])
+        # read in testing labels
+        test_labels = np.array([np.int32(lines[i][1]) for i in range(len(lines))])
+        self.test_imgs = test
+        self.test_labels = test_labels
+        return
 
     def getAccuracy(self,csv_filename):
         ### Run test images
-        imageDirectory = self.test_dir
+        imageDirectory = self.image_dir
         with open(imageDirectory + csv_filename, 'r') as f:
             reader = csv.reader(f)
             lines = list(reader)
@@ -46,7 +60,7 @@ class Signs:
         print('calculating confusion matrix')
 
         for i in range(len(lines)):
-            original_img = cv2.imread(imageDirectory+lines[i][0]+".png")
+            original_img = cv2.imread(imageDirectory+lines[i][0]+self.suffix)
 
             test_label = np.int32(lines[i][1])
             #ret, results, neighbours, dist = knn.findNearest(test_img, k)
@@ -67,8 +81,6 @@ class Signs:
                 key = cv2.waitKey()
                 if key==27:    # Esc key to stop
                     break
-
-
 
         print("\n\nTotal accuracy: " + str(correct/len(lines)))
         print(confusion_matrix)
@@ -243,46 +255,26 @@ class Signs:
         # NOTE found shape
         # contours[idx] is the sign
         cnt = contours[idx]
-
-        # is the sign roughly in the center?
-        # TODO if not in center, empty
-        # dimensionless centroid
-        M = cv2.moments(cnt)
-        #print('location')
-        #print(img.shape)
-        #cx = int(M['m10']/M['m00'])/img.shape[0]
-        #cy = int(M['m01']/M['m00'])/img.shape[1]
-        #print(cx,cy)
-
-        # Area
-        # extent: contour area/bounding box area
-        # cnt area / convexHull 
-        area = cv2.contourArea(cnt)
         x,y,w,h = cv2.boundingRect(cnt)
-        rect_area = w*h
-        extent = float(area)/rect_area
-        hull = cv2.convexHull(cnt)
-        ratio = cv2.contourArea(cnt) / cv2.contourArea(hull)
-        area_ratio = area/(img.shape[0]*img.shape[1])
-        rect_area_ratio = rect_area/(img.shape[0]*img.shape[1])
-        white_ratio = whites/total_pix
 
-        #print(f'area ratio = {area_ratio}')
-        #print(f'rect area ratio = {rect_area_ratio}')
-        #print(f'solidity (area/hull) = {ratio}')
-        #print(f'extent (area/rect): {extent}')
-        #print(f'white ratio = {whites/total_pix}')
+        blank = np.zeros(img.shape[:2],dtype=np.uint8)
+        cnt_img = cv2.drawContours(blank,[cnt],0,255,-1)
+        #ratio = img.shape[0]/h
+        crop_img = cnt_img[y:y+h,x:x+w]
+        resize_img = cv2.resize(crop_img, (30,30))
 
-        if (rect_area_ratio > 0.9 or rect_area_ratio < 0.01):
-            return img,0
+        img_area = img.shape[0]*img.shape[1]
+        area = w*h
 
-        #label = self.identifyContour(cnt,img)
-        # DEBUG
-        label = self.identifyChevron(cnt,img)
-        print(f'label = {self.label2text[label]}')
+        #print(f'aspecr ratio: {w/h}')
+        if (w/h > 3 or h/w>3):
+            return None
+        if (area/img_area < 0.01 or area/img_area>0.9):
+            return None
+
+        return resize_img
 
 
-        return img, label
 
     def identifyChevron(self, cnt,img):
         # identify circles
@@ -295,12 +287,6 @@ class Signs:
         ratio = img.shape[0]/h
         crop_img = cnt_img[y:y+h,x:x+w]
         resize_img = cv2.resize(crop_img, (int(w*ratio), int(h*ratio)))
-
-        cv2.imshow('debug', resize_img)
-        key = cv2.waitKey(10)
-        if key==27:    # Esc key to stop
-            exit(0)
-
 
 
         circles = cv2.HoughCircles(resize_img,cv2.HOUGH_GRADIENT,1,20,
@@ -332,10 +318,6 @@ class Signs:
             breakpoint()
         '''
         return label
-
-        # aspect ratio too weird
-        # area too large/small
-
 
 
         # draw the outer circle
@@ -412,7 +394,7 @@ class Signs:
         processed_imgs = []
         texts = []
         for i in indices:
-            img = self.train_data[i]
+            img = self.train_imgs[i]
             text = f'{i}: true label: {self.label2text[self.train_labels[i]]}'
             print(' -------------- ')
             print(text)
@@ -434,16 +416,48 @@ class Signs:
         while True:
             i = np.random.randint(0,count)
             self.debug([i])
+
+    def train(self):
+        training_data = []
+        training_labels = []
+        for (img, label) in zip(self.train_imgs, self.train_labels):
+            processed = self.process(img)
+            if (not processed is None):
+                training_data.append(processed.flatten()/255-0.5)
+                training_labels.append(label)
+
+        clf = svm.SVC()
+        clf.fit(training_data, training_labels)
+        self.clf = clf
+
+        correct_count = 0
+        trained_labels = clf.predict(training_data)
+        errors = len(np.nonzero(training_labels - trained_labels)[0])
+        accuracy = 1-errors/len(trained_labels)
+        print(f'training accuracy = {accuracy}')
+        return
+
+    def test(self):
+        test_data = []
+        test_labels = []
+        for (img, label) in zip(self.test_imgs, self.test_labels):
+            processed = self.process(img)
+            if (not processed is None):
+                test_data.append(processed.flatten()/255-0.5)
+                test_labels.append(label)
+
+        correct_count = 0
+        predicted_labels = self.clf.predict(test_data)
+        errors = len(np.nonzero(predicted_labels - test_labels)[0])
+        accuracy = 1-errors/len(test_labels)
+        print(f'test accuracy = {accuracy}')
+        return
         
 
 if __name__=='__main__':
     main = Signs()
-    main.prepareTemplateContours()
-    #indices = main.getIndices(3)
-    #main.debug(indices[0])
-
-    #main.debug([56]) #56, 58 59 60 64
-    #main.random()
-    main.getTrainingAccuracy()
-    #main.getTestAccuracy()
+    main.loadImgs()
+    main.train()
+    main.saveModel()
+    main.test()
 
