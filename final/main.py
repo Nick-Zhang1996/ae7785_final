@@ -21,7 +21,8 @@ class Main(Node):
     def __init__(self):
         super().__init__('main')
         self.wall_dist_limit = 0.5
-        self.lidar_angle_deg = 4
+        self.lidar_angle_deg = 10
+        self.debug = False
 
         self.br = CvBridge()
         self.vision = Signs()
@@ -85,7 +86,6 @@ class Main(Node):
     # lidar callback
     # sets: self.wall_distance -> distance to front wall
     # sets: self.angle_diff -> relevent angle from being aligned from the walls, in rad
-    # TODO
     def lidar_callback(self,msg):
         angle_inc = (msg.angle_max-msg.angle_min) / len(msg.ranges)
         angles = np.linspace(msg.angle_min, msg.angle_max, len(msg.ranges))
@@ -100,7 +100,6 @@ class Main(Node):
     # then return wall distance and angle misalignment
     def process_lidar(self, angles, ranges):
         # Task 1 ---- find wall distance
-        # first focus on straight ahead +/-  10 degs
 
         a = self.lidar_angle_deg
         mask = np.bitwise_and(angles < radians(a), angles > radians(-a))
@@ -108,9 +107,9 @@ class Main(Node):
         xx = ranges[mask]*np.cos(angles[mask])
         yy = ranges[mask]*np.sin(angles[mask])
 
-        #self.show_scan(angles, ranges, mask)
+        if (self.debug):
+            self.show_scan(angles, ranges, mask)
         
-        # TODO check dimension
         points = np.vstack([xx,yy]).T
         # d = x cos + y sin, gives theta, d
         line = self.hough(points,n=1)[0]
@@ -126,9 +125,6 @@ class Main(Node):
         # plot the said line
         theta = (line[0] + np.pi/2) % np.pi - np.pi/2
         d = line[1]
-        #xx = np.linspace(-1,1)
-        #yy = (d-np.cos(theta)*xx)/np.sin(theta)
-        #self.ax.plot(xx,yy)
 
         # Task 2 ---- find misalignment
         mask = ranges < 2
@@ -143,14 +139,21 @@ class Main(Node):
         angle_disagreement = np.max(thetas) - np.min(thetas)
         self.angle_diff = np.mean(thetas)
         wrapped_wall_angle = (line[0] + np.pi/2) % np.pi - np.pi/2
-        #self.get_logger().info(f'wall: {degrees(wrapped_wall_angle):.2f}deg, d={line[1]}, misalign = {degrees(self.angle_diff):.2f}deg, (err {angle_disagreement})')
-        # doesn't work in multithreading
-        #plt.pause(0.05)
+        self.get_logger().info(f'wall: {degrees(wrapped_wall_angle):.2f}deg, d={line[1]:.2f}, misalign = {degrees(self.angle_diff):.2f}deg, (err {angle_disagreement:.2f})')
 
-        #fig.canvas.draw()
-        #data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
-        #data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
-        #cv2.imshow('debug',data)
+        # doesn't work in multithreading
+        if (self.debug):
+            xx = np.linspace(-1,1)
+            yy = (d-np.cos(theta)*xx)/np.sin(theta)
+            self.ax.plot(xx,yy)
+            plt.pause(0.05)
+
+        if (False and self.debug):
+            fig.canvas.draw()
+            data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+            data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+            cv2.imshow('debug',data)
+            cv2.waitKey()
 
         
         return
@@ -168,7 +171,6 @@ class Main(Node):
         d_count = int(1.0/dd)+1
         theta_count = int(np.pi/dtheta)+1
         panel = np.zeros((theta_count,d_count),dtype=int)
-        # TODO verify spacing and slots
         thetas = np.linspace(-np.pi/2,np.pi/2, theta_count)
         ds = np.linspace(0,1, d_count)
         for point in points:
@@ -194,13 +196,14 @@ class Main(Node):
     def camera_callback(self,msg):
         img = self.br.compressed_imgmsg_to_cv2(msg)
         if (img is None):
-            self.get_logger().info(f'[camera_callback] got None')
-        label = self.vision.predict(img)
-        self.label = label
-        if (self.start_labeling.is_set()):
-            self.label_vec.append(label)
+            self.get_logger().info(f'[camera_callback] got None as image')
+            return
 
-        self.get_logger().info(f'[camera_callback] found label: {self.label2text[label]}')
+        if (self.start_labeling.is_set()):
+            label = self.vision.predict(img)
+            self.label = label
+            self.label_vec.append(label)
+            self.get_logger().info(f'[camera_callback] found label: {self.label2text[label]}')
 
         #cv2.imshow('debug',img)
         #key = cv2.waitKey(10)
@@ -287,6 +290,17 @@ class Main(Node):
     # fine adjust orientation
     # TODO
     def align(self):
+        self.get_logger().info(f'aligning with wall...')
+
+        while (np.abs(self.angle_diff ) > radians(1)):
+            msg = Twist()
+            msg.angular.z = 0.1 * self.angle_diff
+            self.pub_cmd.publish(msg)
+            self.get_logger().info(f'angle_diff: {degrees(self.angle_diff)}')
+
+        msg = Twist()
+        self.pub_cmd.publish(msg)
+        sleep(0.1)
         return
 
     def turnLeft(self):
@@ -316,6 +330,7 @@ class Main(Node):
         return
 
     # go forward until close enough to a wall
+    # TODO May need to add alignment
     def goForward(self):
         v_linear = 0.15
         # go to first node
@@ -356,6 +371,7 @@ def main(args=None):
 def debug(args=None):
     rclpy.init(args=args)
     node = Main()
+    node.debug = True
     rclpy.spin(node)
 
     node.destroy_node()
