@@ -116,14 +116,6 @@ class Signs:
             plt.title(texts[0])
         plt.show()
 
-    def prepareTemplateContours(self):
-        # left curve, left, right, right, curve, stop, goal, return
-        indices = [10,13,48,54,66,99,109]
-        self.lookup = lookup = ['left curve',' left',' right','right curve','stop',' goal','return']
-        imgs = np.array([np.array(cv2.imread(f'{self.image_dir}{i}.png')) for i in indices])
-        self.template_contours = cnts = [self.getContour(img) for img in imgs]
-        return
-
     # get the contour for a template
     def getContour(self,img,show=False):
         # First, check If there's a sign
@@ -175,40 +167,6 @@ class Signs:
             plt.imshow(debug_img)
             plt.show()
         return cnt
-
-    # identify contour to label
-    def identifyContour(self,cnt,img):
-        # calculate matching score for each template
-        scores = [cv2.matchShapes(cnt,cnt_candidate,1,0.0) for cnt_candidate in self.template_contours]
-        scores = np.array(scores)
-        # confidence
-        exp_scores = np.exp(-scores)
-        exp_scores = exp_scores/np.sum(exp_scores)
-
-        # most compatible shape
-        # shape index: left curve, left, right, right curve, stop, goal, return
-        shape2label = [1,1,2,2,4,5,3]
-        shape = np.argmin(scores)
-        confidence = exp_scores[shape]
-        if (confidence > 0.29):
-            pass
-            #breakpoint()
-            #print(f'shape confidence {confidence}')
-
-        # matchShapes is good at finding stop and goal, but can't distinguish arrow very well
-        if (shape in (1,2)):
-            return self.LeftOrRight(cnt,img)
-        elif (shape in (4,5)):
-            # map shape to actual label
-            return shape2label[shape]
-        else:
-            return self.identifyChevron(cnt,img)
-
-        # should never reach here
-        return 0
-
-
-
 
     # process an image, 
     # return debugimg,label
@@ -276,135 +234,6 @@ class Signs:
 
 
 
-    def identifyChevron(self, cnt,img):
-        # identify circles
-        blank = np.zeros(img.shape[:2],dtype=np.uint8)
-        epsilon = 0.02*cv2.arcLength(cnt,True)
-        cnt_img = cv2.drawContours(blank,[cnt],0,255,1)
-        x,y,w,h = cv2.boundingRect(cnt)
-        #img = cv2.rectangle(img,(x,y),(x+w,y+h),(0,255,0),2)
-
-        ratio = img.shape[0]/h
-        crop_img = cnt_img[y:y+h,x:x+w]
-        resize_img = cv2.resize(crop_img, (int(w*ratio), int(h*ratio)))
-
-
-        circles = cv2.HoughCircles(resize_img,cv2.HOUGH_GRADIENT,1,20,
-                            param1=30,param2=20,minRadius=0,maxRadius=0)
-        if (circles is None):
-            return 0
-        circles = np.uint16(np.around(circles))
-
-        debug_img = np.dstack([resize_img]*3)
-
-        i = circle = circles[0,0]
-
-        label = -1
-        # if circle center is near bottom, then it's a left/right
-        #print(f'circle vertical {circle[1]/img.shape[0]}')
-        #print(f'circle lateral (l-r) {circle[0]/img.shape[1]}')
-        if (circle[1] > 0.7*img.shape[0]):
-            # TODO check left or right
-            if ( circle[0] < 0.5*img.shape[1]):
-                label = 1 #left
-            else:
-                label = 2 #right
-        else:
-            label = 3 #do not enter
-
-        '''
-        if (label != self.actual_label):
-            print(f'{self.actual_label} ->{label}')
-            breakpoint()
-        '''
-        return label
-
-
-        # draw the outer circle
-        cv2.circle(debug_img,(i[0],i[1]),i[2],(0,255,0),2)
-        # draw the center of the circle
-        cv2.circle(debug_img,(i[0],i[1]),2,(0,0,255),3)
-
-        plt.imshow(debug_img)
-        plt.show()
-
-
-        return 0
-
-    def LeftOrRight(self, cnt, img):
-        blank = np.zeros(img.shape[:2],dtype=np.uint8)
-        epsilon = 0.02*cv2.arcLength(cnt,True)
-        cnt = cv2.approxPolyDP(cnt, epsilon, True)
-        cnt_img = cv2.drawContours(blank,[cnt],0,255,1)
-        # img, rho, theta, threshold, min_len, max_gap
-        lines = cv2.HoughLinesP(cnt_img, 1, np.pi/180, 20, None, 15, 15)
-        # is there a long vertical line?
-
-        l_len_vec = []
-        l_vec = []
-        if lines is not None:
-            for i in range(0, len(lines)):
-                l = lines[i][0]
-                if (l[2] == l[0]):
-                    l_slope = 100
-                else:
-                    l_slope = np.abs((l[3]-l[1])/(l[2]-l[0]))
-                l_len = ((l[3]-l[1])**2 + (l[2]-l[0])**2)**0.5
-                if (l_slope > 3):
-                    l_vec.append(l)
-                    l_len_vec.append(l_len)
-            if (len(l_vec) == 0):
-                #print(f'cant find vertical line')
-                '''
-                img = cv2.drawContours(img,[cnt],0,(0,0,0),1)
-                for i in range(0, len(lines)):
-                    l = lines[i][0]
-                    img = cv2.line(img, (l[0], l[1]), (l[2], l[3]), (0,0,255), 3, cv2.LINE_AA)
-                plt.imshow(img)
-                plt.show()
-                breakpoint()
-                '''
-                return 0
-            l = longest_vertical_l = l_vec[np.argmax(l_len_vec)]
-            l_center_x = (l[2]+l[0])/2
-            M = cv2.moments(cnt)
-            # FIXME height*width
-            # top left: origin
-            try:
-                cx = int(M['m10']/M['m00'])
-                cy = int(M['m01']/M['m00'])
-            except ZeroDivisionError:
-                return 0
-            #print(f'cx: {cx}')
-            #print(f'l_center_x: {l_center_x}')
-
-            if (cx < l_center_x):
-                label = 1
-            else:
-                label = 2
-            return label
-            
-
-        return 0
-
-
-    # test and display a set of images
-    def debug(self, indices=(25,0,52,8,64,97)):
-        imgs = []
-        processed_imgs = []
-        texts = []
-        for i in indices:
-            img = self.train_imgs[i]
-            text = f'{i}: true label: {self.label2text[self.train_labels[i]]}'
-            print(' -------------- ')
-            print(text)
-            processed_img, label = self.process(img)
-            print(f'identified as :{self.label2text[label]}')
-            imgs.append(img)
-            processed_imgs.append(processed_img)
-            texts.append(text)
-        self.display(processed_imgs,texts)
-
     # get all index of a label
     def getIndices(self, label):
         indices = np.where(self.train_labels == label)
@@ -452,12 +281,24 @@ class Signs:
         accuracy = 1-errors/len(test_labels)
         print(f'test accuracy = {accuracy}')
         return
+
+    def predict(self,img):
+        processed = self.process(img).flatten()/255-0.5
+        if (processed is None):
+            return 0 # empmty
+        else:
+            return self.clf.predict([processed])[0]
         
 
 if __name__=='__main__':
     main = Signs()
+    #main.loadImgs()
+    #main.train()
+    #main.saveModel()
+    #main.test()
     main.loadImgs()
-    main.train()
-    main.saveModel()
-    main.test()
+    main.loadModel()
+    label = main.predict(main.train_imgs[0])
+    true_label = main.train_labels[0]
+    print(label,true_label)
 
