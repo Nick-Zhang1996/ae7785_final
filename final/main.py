@@ -19,7 +19,8 @@ from identify import Signs
 class Main(Node):
     def __init__(self):
         super().__init__('main')
-        self.wall_dist_limit = 0.3
+        self.wall_dist_limit = 0.5
+        self.lidar_angle_deg = 4
 
         self.br = CvBridge()
         self.vision = Signs()
@@ -74,8 +75,9 @@ class Main(Node):
         ax.set_aspect('equal','box')
 
         # robot FOV (ROI)
-        ax.plot([0, cos(radians(10))],[0, sin(radians(10))] )
-        ax.plot([0, cos(radians(-10))],[0, sin(-radians(10))] )
+        a = self.lidar_angle_deg
+        ax.plot([0, cos(radians(a))],[0, sin(radians(a))] )
+        ax.plot([0, cos(radians(-a))],[0, sin(-radians(a))] )
 
         return
 
@@ -91,7 +93,6 @@ class Main(Node):
 
         # set self.wall_distance, self.angle_diff
         self.process_lidar(angles, ranges)
-        plt.pause(0.05)
         return
 
     # conduct hough transform to find all lines nearby
@@ -99,12 +100,14 @@ class Main(Node):
     def process_lidar(self, angles, ranges):
         # Task 1 ---- find wall distance
         # first focus on straight ahead +/-  10 degs
-        mask = np.bitwise_and(angles < radians(10), angles > radians(-10))
+
+        a = self.lidar_angle_deg
+        mask = np.bitwise_and(angles < radians(a), angles > radians(-a))
         mask = np.bitwise_and(mask, np.invert(np.isnan(ranges)))
         xx = ranges[mask]*np.cos(angles[mask])
         yy = ranges[mask]*np.sin(angles[mask])
 
-        self.show_scan(angles, ranges, mask)
+        #self.show_scan(angles, ranges, mask)
         
         # TODO check dimension
         points = np.vstack([xx,yy]).T
@@ -113,7 +116,10 @@ class Main(Node):
         # is the wall mostly perpendicular?
         # theta=0 -> directly in front, theta>0, leaning to second quadrant
         # how far is the wall
-        self.wall_distance = line[1]
+        if (np.abs(line[0]) < radians(10)):
+            self.wall_distance = line[1]
+        else:
+            self.wall_distance = 1.0
         #print(f'theta = {degrees(line[0])}, d = {line[1]}')
 
         # plot the said line
@@ -121,7 +127,7 @@ class Main(Node):
         d = line[1]
         xx = np.linspace(-1,1)
         yy = (d-np.cos(theta)*xx)/np.sin(theta)
-        self.ax.plot(xx,yy)
+        #self.ax.plot(xx,yy)
 
         # Task 2 ---- find misalignment
         mask = ranges < 2
@@ -136,7 +142,16 @@ class Main(Node):
         angle_disagreement = np.max(thetas) - np.min(thetas)
         self.angle_diff = np.mean(thetas)
         wrapped_wall_angle = (line[0] + np.pi/2) % np.pi - np.pi/2
-        self.get_logger().info(f'wall: {degrees(wrapped_wall_angle)}deg, d={line[1]}, misalign = {degrees(self.angle_diff)}deg, (err {angle_disagreement})')
+        #self.get_logger().info(f'wall: {degrees(wrapped_wall_angle):.2f}deg, d={line[1]}, misalign = {degrees(self.angle_diff):.2f}deg, (err {angle_disagreement})')
+        # doesn't work in multithreading
+        #plt.pause(0.05)
+
+        #fig.canvas.draw()
+        #data = np.frombuffer(fig.canvas.tostring_rgb(), dtype=np.uint8)
+        #data = data.reshape(fig.canvas.get_width_height()[::-1] + (3,))
+        #cv2.imshow('debug',data)
+
+        
         return
         
 
@@ -153,7 +168,7 @@ class Main(Node):
         theta_count = int(np.pi/dtheta)+1
         panel = np.zeros((theta_count,d_count),dtype=int)
         # TODO verify spacing and slots
-        thetas = np.linspace(0,np.pi, theta_count)
+        thetas = np.linspace(-np.pi/2,np.pi/2, theta_count)
         ds = np.linspace(0,1, d_count)
         for point in points:
             d_vec = point[0] * np.cos(thetas) + point[1] * np.sin(thetas)
@@ -181,7 +196,7 @@ class Main(Node):
         self.label = label
         if (self.start_labeling.is_set()):
             self.label_vec.append(label)
-        self.get_logger().info(f'[camera_callback] found {self.label2text[label]}')
+            self.get_logger().info(f'[camera_callback] found {self.label2text[label]}')
         return
 
     # return the label the camera is looking at
@@ -234,7 +249,7 @@ class Main(Node):
             self.align()
             self.goForward()
         elif (label == 4): # goal
-            pass
+            return
 
         return
 
@@ -252,6 +267,7 @@ class Main(Node):
 
             while (label != 4):
                 self.takeAction(label)
+                label = self.getLabel()
         except KeyboardInterrupt:
             msg = Twist()
             self.pub_cmd.publish(msg)
@@ -273,6 +289,7 @@ class Main(Node):
         msg = Twist()
         self.pub_cmd.publish(msg)
         sleep(0.1)
+        self.get_logger().info(f'done')
         return
 
     def turnRight(self):
@@ -285,6 +302,7 @@ class Main(Node):
         msg = Twist()
         self.pub_cmd.publish(msg)
         sleep(0.1)
+        self.get_logger().info(f'done')
         return
 
     # go forward until close enough to a wall
@@ -298,7 +316,10 @@ class Main(Node):
         self.pub_cmd.publish(msg)
 
         while (self.wall_distance > self.wall_dist_limit):
-            self.get_logger().info(f'wall dist {self.wall_distance}')
+            #self.get_logger().info(f'wall dist {self.wall_distance}')
+            msg = Twist()
+            msg.linear.x = v_linear
+            self.pub_cmd.publish(msg)
             sleep(0.2)
 
         msg = Twist()

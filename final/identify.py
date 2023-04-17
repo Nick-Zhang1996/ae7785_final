@@ -179,7 +179,9 @@ class Signs:
         shape = np.argmin(scores)
         confidence = exp_scores[shape]
         if (confidence > 0.29):
-            print(f'shape confidence {confidence}')
+            pass
+            #breakpoint()
+            #print(f'shape confidence {confidence}')
 
         # matchShapes is good at finding stop and goal, but can't distinguish arrow very well
         if (shape in (1,2)):
@@ -248,8 +250,8 @@ class Signs:
         M = cv2.moments(cnt)
         #print('location')
         #print(img.shape)
-        cx = int(M['m10']/M['m00'])/img.shape[0]
-        cy = int(M['m01']/M['m00'])/img.shape[1]
+        #cx = int(M['m10']/M['m00'])/img.shape[0]
+        #cy = int(M['m01']/M['m00'])/img.shape[1]
         #print(cx,cy)
 
         # Area
@@ -274,7 +276,12 @@ class Signs:
         if (rect_area_ratio > 0.9 or rect_area_ratio < 0.01):
             return img,0
 
-        label = self.identifyContour(cnt,img)
+        #label = self.identifyContour(cnt,img)
+        # DEBUG
+        label = self.identifyChevron(cnt,img)
+        print(f'label = {self.label2text[label]}')
+
+
         return img, label
 
     def identifyChevron(self, cnt,img):
@@ -288,6 +295,14 @@ class Signs:
         ratio = img.shape[0]/h
         crop_img = cnt_img[y:y+h,x:x+w]
         resize_img = cv2.resize(crop_img, (int(w*ratio), int(h*ratio)))
+
+        cv2.imshow('debug', resize_img)
+        key = cv2.waitKey(10)
+        if key==27:    # Esc key to stop
+            exit(0)
+
+
+
         circles = cv2.HoughCircles(resize_img,cv2.HOUGH_GRADIENT,1,20,
                             param1=30,param2=20,minRadius=0,maxRadius=0)
         if (circles is None):
@@ -373,8 +388,11 @@ class Signs:
             M = cv2.moments(cnt)
             # FIXME height*width
             # top left: origin
-            cx = int(M['m10']/M['m00'])
-            cy = int(M['m01']/M['m00'])
+            try:
+                cx = int(M['m10']/M['m00'])
+                cy = int(M['m01']/M['m00'])
+            except ZeroDivisionError:
+                return 0
             #print(f'cx: {cx}')
             #print(f'l_center_x: {l_center_x}')
 
