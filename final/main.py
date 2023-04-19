@@ -116,10 +116,13 @@ class Main(Node):
         # is the wall mostly perpendicular?
         # theta=0 -> directly in front, theta>0, leaning to second quadrant
         # how far is the wall
+        '''
         if (np.abs(line[0]) < radians(10)):
             self.wall_distance = line[1]
         else:
             self.wall_distance = 1.0
+        '''
+        self.wall_distance = np.min(ranges[mask])
         #print(f'theta = {degrees(line[0])}, d = {line[1]}')
 
         # plot the said line
@@ -139,7 +142,7 @@ class Main(Node):
         angle_disagreement = np.max(thetas) - np.min(thetas)
         self.angle_diff = np.mean(thetas)
         wrapped_wall_angle = (line[0] + np.pi/2) % np.pi - np.pi/2
-        self.get_logger().info(f'wall: {degrees(wrapped_wall_angle):.2f}deg, d={line[1]:.2f}, misalign = {degrees(self.angle_diff):.2f}deg, (err {angle_disagreement:.2f})')
+        #self.get_logger().info(f'wall: {degrees(wrapped_wall_angle):.2f}deg, d={line[1]:.2f}, misalign = {degrees(self.angle_diff):.2f}deg, (err {angle_disagreement:.2f})')
 
         # doesn't work in multithreading
         if (self.debug):
@@ -255,13 +258,13 @@ class Main(Node):
             self.turnRight()
             self.align()
             self.goForward()
-        elif (label == 2 or label == 3): # do not enter / stop
+        elif (label == 3 or label == 4): # do not enter / stop
             self.turnRight()
             self.align()
             self.turnRight()
             self.align()
             self.goForward()
-        elif (label == 4): # goal
+        elif (label == 5): # goal
             return
 
         return
@@ -278,7 +281,7 @@ class Main(Node):
             self.goForward()
             label = self.getLabel()
 
-            while (label != 4):
+            while (label != 5):
                 self.takeAction(label)
                 label = self.getLabel()
         except KeyboardInterrupt:
@@ -294,9 +297,12 @@ class Main(Node):
 
         while (np.abs(self.angle_diff ) > radians(1)):
             msg = Twist()
-            msg.angular.z = 0.1 * self.angle_diff
+            msg.angular.z = np.copysign(0.05 , self.angle_diff)
             self.pub_cmd.publish(msg)
             self.get_logger().info(f'angle_diff: {degrees(self.angle_diff)}')
+            sleep(0.05)
+        self.get_logger().info(f'aligned')
+
 
         msg = Twist()
         self.pub_cmd.publish(msg)
@@ -332,20 +338,30 @@ class Main(Node):
     # go forward until close enough to a wall
     # TODO May need to add alignment
     def goForward(self):
+        sleep(1)
         v_linear = 0.15
         # go to first node
         self.get_logger().info(f'forwarding...')
+        self.get_logger().info(f'wall dist {self.wall_distance}')
 
         msg = Twist()
         msg.linear.x = v_linear
         self.pub_cmd.publish(msg)
 
+        t_last_align = time()
         while (self.wall_distance > self.wall_dist_limit):
-            #self.get_logger().info(f'wall dist {self.wall_distance}')
+            self.get_logger().info(f'wall dist {self.wall_distance}')
             msg = Twist()
             msg.linear.x = v_linear
             self.pub_cmd.publish(msg)
             sleep(0.2)
+            if (time() - t_last_align > 3):
+                msg = Twist()
+                self.pub_cmd.publish(msg)
+                sleep(0.2)
+                self.align()
+                t_last_align = time()
+
 
         msg = Twist()
         self.pub_cmd.publish(msg)
@@ -363,6 +379,20 @@ def main(args=None):
     thread.start()
     node.run()
     #rclpy.spin(node)
+
+    thread.join()
+    node.destroy_node()
+    rclpy.shutdown()
+
+def debugAlign(args=None):
+    rclpy.init(args=args)
+    node = Main()
+
+    thread = Thread(target=rclpy.spin, args=(node,),daemon=True)
+    thread.start()
+    #node.run()
+    #rclpy.spin(node)
+    node.align()
 
     thread.join()
     node.destroy_node()
@@ -412,3 +442,4 @@ def debug2(args=None):
 if __name__ == '__main__':
     main()
     #debug()
+    #debugAlign()
